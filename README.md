@@ -153,6 +153,84 @@ exit "$GATES_FAILED"
 
 A passing pipeline means your infrastructure **provably** meets its performance and correctness contract — not just that Terraform finished without errors.
 
+## Policy as Code — Compliance Mapping
+
+Quality gates prove your infrastructure works. The next question: **does it comply?**
+
+The same NITRO API checks that validate configuration can be mapped to compliance frameworks. A `strongpassword = enableall` assertion isn't just a test — it's evidence for CIS-1.1, PCI-8.3.6, and NIST IA-5. The repo includes a compliance engine (`scripts/compliance-check.py`) that evaluates 37 controls across three frameworks:
+
+| Framework | Controls | What's Verified |
+|-----------|----------|----------------|
+| CIS Citrix NetScaler (15) | Password policy, session timeout, TLS config, HTTP/TCP hardening, header hygiene | Appliance-specific security baseline |
+| PCI-DSS v4.0 (12) | Strong crypto, config standards, HSTS, bot protection, audit logging, clickjacking | Payment card industry requirements |
+| NIST 800-53 Rev 5 (10) | Transmission confidentiality, crypto protection, input validation, access enforcement | Federal security controls |
+
+Policies are defined as data, not code — a single JSON file (`policies/compliance.json`):
+
+```json
+{
+  "id": "CIS-4.1",
+  "title": "TCP SYN flood protection enabled",
+  "severity": "critical",
+  "check": {
+    "type": "nitro",
+    "endpoint": "nstcpprofile/nstcp_hardened",
+    "field": "spoofsyndrop",
+    "expected": "ENABLED"
+  }
+}
+```
+
+The engine supports five check types:
+
+| Type | How It Works |
+|------|-------------|
+| `nitro` | Query NITRO config endpoint, compare field value (supports `eq`, `gte`, `lte` operators) |
+| `nitro_exists` | Verify a NITRO resource exists (errorcode == 0) |
+| `nitro_binding` | Verify a specific binding exists (e.g., cipher bound to vserver) |
+| `http_header` | curl the VIP, check response header (present, absent, or contains value) |
+| `tls` | openssl probe, verify protocol version, cipher, or key size |
+
+The compliance check runs after the test suite in the pipeline and produces a report:
+
+```
+============================================================
+  COMPLIANCE REPORT
+  MGMT: 20.x.x.x  |  VIP: 20.x.x.x
+============================================================
+
+--- CIS Citrix NetScaler Benchmark (15 controls) ---
+  PASS   CIS-1.1      Enforce strong password policy [critical]
+  PASS   CIS-1.2      Minimum password length >= 8 [critical]
+  PASS   CIS-2.1      Enable TLS 1.2 cipher suites [critical]
+  PASS   CIS-4.1      TCP SYN flood protection enabled [critical]
+  ...
+  Result: 15/15 PASSED
+
+--- PCI-DSS v4.0 (12 controls) ---
+  PASS   PCI-4.2.1    Strong cryptography for data transmission [critical]
+  PASS   PCI-4.2.1.2  HSTS enforced with minimum 1-year max-age [critical]
+  PASS   PCI-10.2.1   Audit logging enabled [high]
+  ...
+  Result: 12/12 PASSED
+
+--- NIST 800-53 Rev 5 (10 controls) ---
+  ...
+  Result: 10/10 PASSED
+
+============================================================
+  SUMMARY: 37/37 controls passed across 3 frameworks
+  Critical failures: 0  |  High failures: 0
+  Pipeline: PASS
+============================================================
+```
+
+The JSON report (`compliance-report.json`) is uploaded to Azure Blob alongside the NITRO stats and test results — every pipeline run produces a complete compliance audit trail.
+
+**Adding your own controls**: Add entries to `policies/compliance.json`. The engine evaluates whatever you define — no code changes needed. Map your organization's security requirements to NITRO API checks, and the pipeline enforces them automatically.
+
+**Severity-gated pipeline**: The engine exits non-zero if any `critical` or `high` severity control fails. `medium` and `low` findings are reported but don't break the build.
+
 ## Observability — Collecting Evidence
 
 After tests complete, the pipeline collects a forensic snapshot from the VPX via NITRO API and uploads it to Azure Blob Storage:
@@ -174,7 +252,8 @@ Azure Blob: stvpxdiag{suffix}/vpx-logs/run-{run_id}/{timestamp}/
 ├── config-rewritepolicy.json
 ├── ...
 ├── ns.log
-└── test-results.log
+├── test-results.log
+└── compliance-report.json
 ```
 
 Every pipeline run produces a complete audit trail. When something changes between runs, you can diff the config snapshots and correlate with the test results.
@@ -236,7 +315,8 @@ Push to `main` or trigger the workflow manually from GitHub Actions. The pipelin
 5. Applies security hardening (features, modes, profiles, system params)
 6. Configures traffic (certs, backend, vservers, headers, bot blocking)
 7. Runs 22 test sections with 9 quality gates
-8. Collects NITRO stats + logs → Azure Blob Storage
+8. Runs compliance check (37 controls across CIS, PCI-DSS, NIST)
+9. Collects NITRO stats + logs + compliance report → Azure Blob Storage
 
 Total pipeline time: ~20 minutes.
 
@@ -277,8 +357,12 @@ terraform/
   security/                        Features, modes, system params, HTTP/TCP profiles, timeouts
   traffic/                         Certs, backend, LB vservers, SSL, headers, bot blocking, logging
 
+policies/
+  compliance.json                  37 controls across CIS, PCI-DSS, NIST 800-53
+
 scripts/
   run-comprehensive-tests.sh       22 test sections, 9 quality gates, 140+ assertions
+  compliance-check.py              Policy as Code engine — evaluates compliance controls
 ```
 
 ## Security

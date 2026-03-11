@@ -237,6 +237,21 @@ jobs:
           set -o pipefail
           ./run-comprehensive-tests.sh "${MGMT_IP}" "${NSROOT_PW}" "${VIP}" 2>&1 | tee /tmp/vpx-logs/test-results.log
 
+      - name: Compliance check (Policy as Code)
+        if: always()
+        run: |
+          MGMT_IP="${{ needs.deploy.outputs.mgmt_public_ip }}"
+          VIP="${{ needs.deploy.outputs.vip_public_ip }}"
+          NSROOT_PW="${{ secrets.NSROOT_PASSWORD }}"
+          echo "::add-mask::$NSROOT_PW"
+
+          mkdir -p /tmp/vpx-logs
+
+          cd ${{ github.workspace }}
+          python3 scripts/compliance-check.py "${MGMT_IP}" "${NSROOT_PW}" "${VIP}" \
+            --policies policies/compliance.json \
+            --output /tmp/vpx-logs/compliance-report.json
+
       - name: Collect VPX data and upload to Azure Storage
         if: always()
         run: |
